@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Catur AI</title>
+<style>
+:root{color-scheme:dark;--bg:#10151e;--panel:#1b2432;--line:#344258;--text:#f4f6fa;--muted:#b9c5d6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,Arial,sans-serif;padding:16px}
+main{max-width:560px;margin:auto}
+h1{font-size:25px;margin:4px 0}.muted{color:var(--muted);font-size:14px}
+.panel{background:var(--panel);border:1px solid var(--line);padding:14px;border-radius:14px;margin:14px 0}
+#board{display:grid;grid-template-columns:repeat(8,1fr);width:100%;aspect-ratio:1;overflow:hidden;border-radius:6px;touch-action:manipulation}
+.sq{border:0;border-radius:0;aspect-ratio:1;display:flex;align-items:center;justify-content:center;padding:0;font-size:clamp(25px,8vw,47px);line-height:1;position:relative}
+.light{background:#eee5cf}.dark{background:#769579}
+.whitepiece{color:#fff;text-shadow:0 1px 2px #111,1px 0 #111,-1px 0 #111,0 -1px #111}
+.blackpiece{color:#20242a;text-shadow:0 1px 1px #fff8}
+.sel{box-shadow:inset 0 0 0 4px #f6d65d}
+.target:after{content:"";position:absolute;width:23%;height:23%;border-radius:50%;background:#263b34aa}
+button,select{font:inherit;border:1px solid #46566d;background:#273448;color:white;border-radius:9px;padding:11px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.controls button{flex:1}
+select{width:100%;margin:8px 0 12px}
+#status{font-weight:700}#moves{font-size:14px;line-height:1.8;overflow-wrap:anywhere;max-height:120px;overflow:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>♟ Bot Catur AI</h1>
+<div class="muted">Lu bermain putih · lawan Stockfish</div>
+<div class="panel">
+<div id="status">Memuat komponen catur...</div>
+<div id="detail" class="muted">Pastikan internet aktif.</div>
+<label for="level">Kekuatan komputer</label>
+<select id="level">
+<option value="10">Cepat</option><option value="16" selected>Kuat</option><option value="22">Sangat kuat</option><option value="28">Maksimal (lebih lambat)</option>
+</select>
+</div>
+<div class="panel">
+<div id="board" aria-label="Papan catur"></div>
+<div class="muted" style="margin-top:10px">Ketuk bidak putih, lalu ketuk kotak tujuan.</div>
+<div class="controls"><button id="new">Game baru</button><button id="undo">Batalkan giliran</button><button id="flip">Balik papan</button></div>
+</div>
+<div class="panel"><b>Riwayat langkah</b><div id="moves">Belum ada langkah</div></div>
+</main>
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+const symbols={wk:"♔",wq:"♕",wr:"♖",wb:"♗",wn:"♘",wp:"♙",bk:"♚",bq:"♛",br:"♜",bb:"♝",bn:"♞",bp:"♟"};
+let game=null,engine=null,ready=false,thinking=false,selected=null,targets=[],flipped=false,gameVersion=0;
+function say(a,b=""){$("status").textContent=a;$("detail").textContent=b}
+function endText(){
+ if(!game||!game.isGameOver())return "";
+ if(game.isCheckmate())return "Skakmat!";
+ if(game.isStalemate())return "Remis: stalemate";
+ if(game.isThreefoldRepetition())return "Remis: pengulangan";
+ if(game.isInsufficientMaterial())return "Remis: materi tidak cukup";
+ return "Permainan remis";
+}
+function render(){
+ if(!game)return;
+ const board=$("board");board.innerHTML="";
+ const ranks=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
+ const files=flipped?["h","g","f","e","d","c","b","a"]:["a","b","c","d","e","f","g","h"];
+ const matrix=game.board();
+ ranks.forEach(rank=>files.forEach(file=>{
+  const sq=file+rank,r=8-rank,c=file.charCodeAt(0)-97,p=matrix[r][c];
+  const b=document.createElement("button");
+  b.className="sq "+((r+c)%2===0?"light":"dark");
+  if(selected===sq)b.classList.add("sel");
+  if(targets.includes(sq))b.classList.add("target");
+  b.setAttribute("aria-label",sq);
+  if(p){b.textContent=symbols[p.color+p.type];b.classList.add(p.color==="w"?"whitepiece":"blackpiece")}
+  b.addEventListener("click",()=>clickSquare(sq));board.appendChild(b);
+ }));
+ const hist=game.history();
+ $("moves").textContent=hist.length?hist.map((m,i)=>(i%2===0?(Math.floor(i/2)+1)+". ":"")+m).join(" "):"Belum ada langkah";
+ if(endText())say(endText(),"Game selesai");
+ else if(!thinking&&ready)say(game.turn()==="w"?"Giliran lu":"Giliran komputer",game.isCheck()?"Raja sedang skak!":"");
+}
+function clickSquare(sq){
+ if(!ready||thinking||game.isGameOver()||game.turn()!=="w")return;
+ const p=game.get(sq);
+ if(selected&&targets.includes(sq)){
+  try{game.move({from:selected,to:sq,promotion:"q"})}catch(e){}
+  selected=null;targets=[];render();if(!game.isGameOver())botMove();return;
+ }
+ if(p&&p.color==="w"){selected=sq;targets=game.moves({square:sq,verbose:true}).map(m=>m.to)}
+ else{selected=null;targets=[]}
+ render();
+}
+function botMove(){
+ if(!ready||thinking||game.isGameOver())return;
+ thinking=true;say("Komputer sedang berpikir...","Stockfish mencari langkah");
+ engine.postMessage("position fen "+game.fen());
+ engine.postMessage("go depth "+Number($("level").value));
+}
+function initEngine(){
+ try{
+  const engineURL="https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js";
+  const workerBlob=new Blob(['importScripts("'+engineURL+'");'],{type:"text/javascript"});
+  engine=new Worker(URL.createObjectURL(workerBlob));
+  let timeout=setTimeout(()=>{if(!ready)say("Mesin belum siap","CDN mungkin tidak mendukung Worker. Coba jaringan lain atau gunakan hosting HTTPS.")},12000);
+  engine.onmessage=e=>{
+   const line=String(e.data).trim();
+   if(line==="uciok"){engine.postMessage("isready");return}
+   if(line==="readyok"){clearTimeout(timeout);ready=true;say("Stockfish siap","Mulai game baru atau langsung bermain.");render();return}
+   if(line.startsWith("info ")&&line.includes(" depth ")){const m=line.match(/\bdepth (\d+)/);if(m)$("detail").textContent="Menghitung depth "+m[1];return}
+   if(line.startsWith("bestmove ")){
+    thinking=false;
+    if(game.isGameOver()){render();return}
+    const u=line.split(/\s+/)[1];
+    if(!u||u==="(none)"||u==="0000"){render();return}
+    try{game.move({from:u.slice(0,2),to:u.slice(2,4),promotion:u[4]||"q"})}catch(err){say("Langkah mesin gagal",String(err))}
+    render();
+   }
+  };
+  engine.onerror=()=>{clearTimeout(timeout);ready=false;say("Stockfish gagal dimuat","Sumber mesin mungkin tidak kompatibel dengan browser.")}
+  engine.postMessage("uci");
+ }catch(e){say("Tidak dapat memulai Stockfish",String(e))}
+}
+function loadChess(){
+ const sources=[
+  "https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js",
+  "https://unpkg.com/chess.js@0.10.3/chess.min.js"
+ ];
+ let i=0;
+ function next(){
+  if(i>=sources.length){say("Gagal memuat aturan catur","Periksa internet, lalu muat ulang halaman.");return}
+  const s=document.createElement("script");s.src=sources[i++];s.onload=()=>{
+   if(typeof Chess==="undefined"){next();return}
+   game=new Chess();say("Menyiapkan Stockfish...","Tunggu sebentar");render();initEngine();
+  };s.onerror=()=>{s.remove();next()};document.head.appendChild(s);
+ }
+ next();
+}
+$("new").onclick=()=>{
+ gameVersion++;if(engine&&thinking)engine.postMessage("stop");
+ thinking=false;selected=null;targets=[];
+ if(game)game.reset();render();
+};
+$("undo").onclick=()=>{
+ if(!game||thinking||!game.history().length)return;
+ game.undo();if(game.turn()==="b"&&game.history().length)game.undo();
+ selected=null;targets=[];render();
+};
+$("flip").onclick=()=>{flipped=!flipped;render()};
+say("Memuat komponen catur...","Internet diperlukan untuk mengunduh library dan mesin.");
+loadChess();
+})();
+</script>
+</body>
+</html>
